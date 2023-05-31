@@ -6,7 +6,6 @@ from datetime import datetime
 import math
 
 # Define the URL and authentication details for the Zabbix API for Zabbix 6.0
-# url = 'http://61.74.240.67:20080/zabbix/api_jsonrpc.php'
 
 url = 'http://<zabbix URL 주소 입력 >/zabbix/api_jsonrpc.php'
 headers = {'Content-Type': 'application/json-rpc'}
