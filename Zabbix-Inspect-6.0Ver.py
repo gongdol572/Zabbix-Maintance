@@ -3,21 +3,28 @@ import json
 import pandas as pd
 import time
 from datetime import datetime
-import math
+import logging
+from rest_framework import exceptions
 
-# Define the URL and authentication details for the Zabbix API for Zabbix 6.0
 
-url = 'http://<zabbix URL 주소 입력 >/zabbix/api_jsonrpc.php'
+url = 'http://10.220.0.119/zabbix/api_jsonrpc.php'
 headers = {'Content-Type': 'application/json-rpc'}
 
 
-# 데이터 가공 클래스 생성
+UNAME = "Admin"
+PWORD = "zabbix"
+
+hostinformation=[]
+exceldata=[]
+
+
 
 class DataProcessing:
     # 호스트 정보 가공을 위한 함수 hostinfo 생성 
     def hostinfo(hostinformation):
-        # 호스트 리스트 초기화
-        host_information = []  # New list to store additional information
+        # 호스트 정보를 저장할 리스트 선언
+        host_information = []  
+       
         # 호스트 정보를 받는 for문 생성
         for host in hostinformation:
             # 호스트 정보의 interface 자료 확인을 위한 interface 변수 생성
@@ -25,93 +32,96 @@ class DataProcessing:
             
             # 인터페이스 길이 동안 for 문 실행
             for interface in interfaces:
+                # type 유형 정의
+                type={'1':'Agent','2':'SNMP','3':'IPMI','4':'JMX'}
+                # interface["type"] 값에 따라 agent_type 정의 -> Rest로 받아온 interface["type"] 값이 1이면 agent_type 값은 agent로 정의
+                agent_type = type.get(interface["type"])
+                print("agent type = ", agent_type)
+                # 호스트가 정상적으로 연결된 상태면 리스트에 데이터 삽입 
+                if not interface["error"] and host["status"] == "0" :
 
-                # 인터페이스 내 값이 없고, 호스트 상태가 정상이면 리스트에 데이터 삽입 
-                if not interface["error"] and host["status"] == "0":
-                    # type= agent
-                    if interface["type"] == '1':
-                        host_information.append([host["name"], interface["ip"], interface["port"], "Agent", interface["error"], "정상"])
-                    # type=SNMP
-                    elif interface["type"] == '2':
-                        host_information.append([host["name"], interface["ip"], interface["port"], "SNMP", interface["error"], "정상"])
-                    # type=IPMI
-                    elif interface["type"] == '3':
-                        host_information.append([host["name"], interface["ip"], interface["port"], "IPMI", interface["error"], "정상"])
-                    # type=JMX
-                    elif interface["type"] == '4':
-                        host_information.append([host["name"], interface["ip"], interface["port"], "JMX", interface["error"], "정상"])
-                # 인터페이스 내 값이 존재하고 호스트 상태가 정상일 때 리스트에 데이터 삽입
+                    host_information.append([host["name"], interface["ip"], interface["port"], agent_type, interface["error"], "정상"])
+                    
+                # 호스트가 연결 불가 상태이지만 호스트 상태가 정상일 때 리스트에 데이터 삽입
                 elif interface["error"] and host["status"] == "0":
                     # type=agent
-                    if interface["type"] == '1':
-                        host_information.append([host["name"], interface["ip"], interface["port"], "Agent", interface["error"], "Agent 연결 불가"])
-                    # type=SNMP
-                    elif interface["type"] == '2':
-                        host_information.append([host["name"], interface["ip"], interface["port"], "SNMP", interface["error"], "Agent 연결 불가"])
-                    # type=IPMI
-                    elif interface["type"] == '3':
-                        host_information.append([host["name"], interface["ip"], interface["port"], "IPMI", interface["error"], "Agent 연결 불가"])
-                    # type=JMX
-                    elif interface["type"] == '4':
-                        host_information.append([host["name"], interface["ip"], interface["port"], "JMX", interface["error"], "Agent 연결 불가"])
-        # 리스트 삽입 구조가 데이터에 리스트를 추가하는 방식이라 기존 데이터 초기화
-        hostinformation.clear()
-        # 호스트 정보에 새롭게 추가된 데이터 리스트 추가 
-        # 최종 데이터는 예를 들어 아래와 같음 : 
+                    host_information.append([host["name"], interface["ip"], interface["port"], agent_type, interface["error"], "Agent 연결 불가"])
+                
+                else :
+                    host_information.append([host["name"], interface["ip"], interface["port"], agent_type, interface["error"], "해당 호스트는 비활성화 상태입니다."])
+     
+        # 최종 데이터는 아래와 같은 예시와 같음 : 
         # jira-crowd	127.0.0.1	10060	JMX	Connection refused (Connection refused): service:jmx:rmi:///jndi/rmi://127.0.0.1:10060/jmxrmi	Agent 연결 불가
-        hostinformation.append(host_information)  # Append additional information to the original list
-        print('최종 생성된 호스트 데이터는 다음과 같습니다 : ', hostinformation[0],'\n')
-        return hostinformation[0]
+        print('최종 생성된 호스트 데이터는 다음과 같습니다 : ', host_information,'\n')
+        return host_information
     
-    # 장애 정보를 받아오고 가공하는 함수
     def probleminfo(hostlist):
-
-        # hostlist는 메인에서 host.get 에서 받아온 json 딕셔너리를 리스트로 정리함
+        # 장애 정보를 받아올 Hostid 값 및 hostname 정의
         hostlist= [list(item.values()) for item in hostlist]
-
         print('hostlist for problemcheck : ',hostlist)
-
-        # 장애정보를 받아올 리스트 선언
         probleminformation = []
         # problemparameter={'output': ["name","severity","clock"], 'hostids': hostids, "recent": "true"}
-        
-        # hostlist의 길이만큼 for문 진행
+        # host 갯수 만큼 for문 진행
         for hlist in range (len(hostlist)):
-            # 장애정보를 받아올 problem 파라미터 지정
+            # 각 호스트 마다 장애 정보를 받기 위해 Parameter 지정, hostlist[hlist][0] 값은 각 호스트의 hostid 값.
+            # 장애 정보는 호스트에 발생한 장애 리스트와 가장 최근에 해결된 장애 리스트만 가져옴.
+            # Rest에 요청한 장애 정보는 장애 이름, 장애 수준, 장애가 발생한 시간을 가져옴.
+            # 정보 : https://www.zabbix.com/documentation/current/en/manual/api/reference/problem/get
+
+            '''
+            가져온 장애 정보 예시
+            
+            Rest Information ={
+            "jsonrpc": "2.0",
+            "result": [
+            {
+                 "eventid": "2442345",
+                    "name": "High memory utilization (>90% for 5m)",
+                    "severity": "3",
+                    "clock": "1690867966"
+             }
+            ],
+                    "id": 1
+            }
+
+            '''
+
             problemparameter={'output': ["name","severity","clock"], 'hostids': hostlist[hlist][0], "recent": "true"}
-            # problem.get method로 장애 정보를 받아옴
             probleminfo= Getinfo.RestInfo('problem.get',problemparameter)
 
-            # 받아온 장애정보를 리스트로 변경
+            # 가져온 장애 정보 리스트화 
             probleminfo= [list(item.values()) for item in probleminfo]
-            del hostlist[hlist][0]
+            
+            
+        
             print('hostlist=', hostlist[hlist])
             print('probleminfo = ', probleminfo)
-
-            # 호스트 id 별 장애정보를 받아올 경우에 진행
-            if probleminfo:
             
+            # 장애 정보가 있을 경우,
+            
+            if probleminfo:
+
                 for i in range (len(probleminfo)):
+                   
+                    hostid = hostlist[hlist]
 
-                    # 받아온 severity 정보는 1,2,3,4,5 순으로 받아오고 리스트의 3번째 값으로 받아옴 
-                    print('severity : ', probleminfo[i][2])
+                    print('hostid =', hostid)
+                    hostname = [probleminfo[i][1]]
 
-                    # severity 순으로 데이터를 리스트로 저장  (hostid, hostname, problem description, severity, 장애 발생 시간으로 저장)
-                    if probleminfo[i][2] == '1':
-                        probleminformation.append(hostlist[hlist]+ [probleminfo[i][1]]+ ['Information']+ [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(probleminfo[i][3])))])
-                        
-                    elif probleminfo[i][2] == '2':
-                        probleminformation.append(hostlist[hlist]+ [probleminfo[i][1]]+ ['Average']+ [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(probleminfo[i][3])))])
-                        
-                    elif probleminfo[i][2] == '3':
-                        probleminformation.append(hostlist[hlist]+ [probleminfo[i][1]]+ ['Low']+ [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(probleminfo[i][3])))])
-                        
-                    elif probleminfo[i][2] == '4':
-                        probleminformation.append(hostlist[hlist]+ [probleminfo[i][1]]+ ['High']+ [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(probleminfo[i][3])))])   
-                     
-                    elif probleminfo[i][2] == '5':
-                        probleminformation.append(hostlist[hlist]+ [probleminfo[i][1]]+ ['Average']+ [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(probleminfo[i][3])))])
-            #         
+                    print('hostname = ', hostname)
+                    
+                    severity_info= {'0':'Undefined','1':'Information','2':'Average','3':'Low','4':'High','5':'Disaster'}
+                    severity = [severity_info.get(probleminfo[i][2])]
+
+                    ProblemTime= [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(int(probleminfo[i][3])))]
+
+                    print('severity : ', severity)
+                    print('Problem Time :', ProblemTime)
+
+                    probleminformation.append(hostid+ hostname+ severity+ ProblemTime)
+                 
+                    
+                      
             else:
                 print('장애 리스트가 없습니다','\n')            
 
@@ -121,45 +131,6 @@ class DataProcessing:
         # print('최종 probleminformation :', probleminformation)
 
         return probleminformation
-    
-    def iteminfo(hostlist):
-         
-         hostlist= [list(item.values()) for item in hostlist]
-         print('hostlist for itemcheck : ',hostlist)
-         print('hostlist[0]',len(hostlist))
-         print('template :', hostlist[0][2][1]['host'])
-         print('hostlist:',hostlist[0][1])
-
-         
-         linuxitem=[]
-         windowsitem=[]
-         snmpitem=[]
-         dbitem=[]
-
-         for i in range (len(hostlist)):
-             for j in range (len(hostlist[i][2])):
-                print('template = ', hostlist[i][2][j]['host'])
-                if hostlist[i][2][j]['host'] and 'Linux' in hostlist[i][2][j]['host']:
-                    itemparameter = { "output": ["name","key_","lastvalue"], "hostids": hostlist[i][0], "search":{"name": "CPU utilization", "name": "Available memory"} }
-                    
-                    item=Getinfo.RestInfo('item.get', itemparameter)
-                    item = [list(item.values()) for item in item]
-                    print('item = ', item[0])
-                    for itemlen in range (len(item)): 
-                       
-                        linuxitem.append([hostlist[i][1]]+ [hostlist[i][3][0]['ip']] + item[itemlen])
-                
-                elif hostlist[i][2][j]['host'] and 'Windows' in hostlist[i][2][j]['host']:
-                    
-                   
- 
-                        
-                    print('itemlist : ', linuxitem)
-             
-
-         
-
-
 
 # host, problem, item 수집을 위한 클래스 함수 구현        
 class Getinfo:
@@ -177,82 +148,75 @@ class Getinfo:
         try:
             rest_response = requests.post(url, json=host_payload, headers=headers)
             rest_response_json = rest_response.json()
-            print("Get information success!\nhost=" + json.dumps(rest_response_json, indent=4))
+            print("Get information success!\n Rest Information =" + json.dumps(rest_response_json, indent=4))
 
            # 호스트 정보를 딕셔너리로 정리
             restresult = rest_response.json()['result']
             return restresult
         
-            # enabled_hosts = sum(host['status'] == '0' for host in hosts)
-            # disabled_hosts = sum(host['status'] == '1' for host in hosts)
-            # print('Number of hosts (enabled/disabled):', len(hosts), enabled_hosts, '/', disabled_hosts)
-
         except Exception as e:
             print("Failed to get host information. Error:", str(e))
             exit()
 
 # 생성된 데이터를 엑셀에 삽입
-def createexcel(information):
-    if information == hostinformation:
-        excel_data = pd.DataFrame(information, columns=['Host Name', 'IP', 'Port' ,'Agent Type', 'Agent Error Message', 'Agent 상태 확인'])
-        print("엑셀에 삽입할 데이터는 아래와 같습니다.\n", excel_data)
+def createexcel(exceldata):
+
+        excel_data = pd.ExcelWriter('C:\\Users\\Jackson\\Desktop\\{}-Zabbix-Inspection.xlsx'.format(datetime.today().strftime('%Y-%m-%d')), engine='openpyxl')
+        
+        
+        
         try:
-            excel_data.to_excel('/Users/gongdol/Desktop/{} Zabbix 점검 항목.xlsx'.format(datetime.today().strftime('%Y-%m-%d')), sheet_name='Host-Check')
-            print("Data written to Excel successfully.")
-        except Exception as e:
-            print("Failed to write data to Excel. Error:", str(e))
-    elif information == probleminformation:
-        excel_data= pd.DataFrame(information, columns=['Hostname', 'Description','Severity','Time'])
-        print("엑셀에 삽입할 데이터는 아래와 같습니다.\n", excel_data)
-        try:
-            excel_data.to_excel('/Users/gongdol/Desktop/{} Zabbix 점검 항목.xlsx'.format(datetime.today().strftime('%Y-%m-%d')), sheet_name='Problem-Check')
-            print("Data written to Excel successfully.")
-        except Exception as e:
-            print("Failed to write data to Excel. Error:", str(e))
-    
+            
+            for i in range(len(exceldata)):
+                excel_data_df = pd.DataFrame(exceldata[i]['data'], columns=exceldata[i]['column'])
+                print("엑셀에 삽입할 데이터는 아래와 같습니다.\n", excel_data_df)
+                excel_data_df.to_excel(excel_data, sheet_name= exceldata[i]['sheet_name'], index=False)
+                print("Data written to Excel successfully.")
 
 
+            
+            #excel_data.to_excel('C:\\Users\\Jackson\\Desktop\\{}-Zabbix-Inspection.xlsx'.format(datetime.today().strftime('%Y-%m-%d')), sheet_name=sheet_name)
+            
+            excel_data.save();
+        except Exception as e:
+            print("Failed to write data to Excel. Error:", str(e))
+  
 
 # 로그인을 통해 Session ID 확인
 
-def login(UNAME,PWORD):
-    # Get Authentication Session
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "user.login",
-        "params": {
-            "user": UNAME,
-            "password": PWORD
-    },
-        "id": 1
-    }
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        response_json = response.json()
-        AUTHSESSION = response_json["result"]
-        print(json.dumps(response_json, indent=4, sort_keys=True))
+    def login(UNAME,PWORD):
+        # Get Authentication Session
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "user.login",
+            "params": {
+                "username": UNAME,
+                "password": PWORD
+        },
+            "id": 1
+        }
+        try:
+            response = requests.post(url, json=payload, headers=headers)
+            response_json = response.json()
+            AUTHSESSION = response_json["result"]
+            print(json.dumps(response_json, indent=4, sort_keys=True))
 
-        # 생성된 Session 값 반환
-        return AUTHSESSION
-    except Exception as e:
-        print("Failed to authenticate. Error:", str(e))
-    exit()
-
-
+            # 생성된 Session 값 반환
+            return AUTHSESSION
+        except Exception as e:
+            print("Failed to authenticate. Error:", str(e))
+        exit()
 
 
-##########################################################메인#################################################################
-# Zabbix에 로그인할 사용자 이름과 패스워드 입력
+######################################메인 함수 #########################################
 
-UNAME = 'Admin'
-PWORD = 'zabbix'
+
 
 # 로그인 함수를 통해 로그인 Session ID를 가져옴
 AUTHTOKEN= login(UNAME,PWORD)
 
 ######################### 호스트(에이전트) 데이터를 가져오는 과정 ##########################
 # 호스트 정보를 가져오기 위한 변수 리스트 선언
-hostinformation=[]
 
 # 호스트 정보를 가져오기 위한 파라미터 선언
 hostparameter = {'output': ["hostid", "name", "status"], 'selectInterfaces': ["ip", "type", "port","error"] }
@@ -263,31 +227,34 @@ hostinformation=Getinfo.RestInfo('host.get',hostparameter)
 # DataProcessing.hostinfo 함수를 통해 호스트 정보를 가공
 hostinformation=DataProcessing.hostinfo(hostinformation)
 
-createexcel(hostinformation)
+
+excelcolumn= ['Host Name', 'IP', 'Port' ,'Agent Type', 'Agent Error Message', 'Agent 상태 확인']
+sheet_name='Host-Check'
+#createexcel(hostinformation,excelcolumn,sheet_name)
+exceldata.append({'data':hostinformation,'column':excelcolumn,'sheet_name':sheet_name})
 
 ##################################################################################
 
 ######################### 호스트 별 장애 데이터를 가져오는 과정 ###########################
 
-# host 정보를 받아올 파라미터 생성
+
 hostparameter= {'output': ["name", "hostid"]}
 
-# host.get method로 네임과, 호스트 아이디를 받을 수 있도록 Rest 요청 진행
 probleminformation=Getinfo.RestInfo('host.get', hostparameter)
 
-# host.get method로 요청해 받아온 데이터를 토대로 장애 데이터 요청 및 데이터 가공
 probleminformation= DataProcessing.probleminfo(probleminformation)
 print('최종 probleminformation = ', probleminformation)
 
+
+excelcolumn= ['HostID', 'Hostname', 'Description','Severity','Time']
+sheet_name='Problem-Check'
+
+
+exceldata.append({'data':probleminformation,'column':excelcolumn,'sheet_name':sheet_name})
+
+
+
+
 ##################################################################################
 # 최종 데이터들을 엑셀에 삽입
-
-createexcel(probleminformation)
-######################### 호스트 별 수집 데이터를 가져오는 과정 ###########################
-
-parameter= {'output': ["name", "hostid"], 'selectInterfaces': ["ip"], 'selectParentTemplates': ["host"]}
-itemhostlist=Getinfo.RestInfo('host.get',parameter)
-itemlist=DataProcessing.iteminfo(itemhostlist)
-
-##################################################################################
-
+createexcel(exceldata)
