@@ -9,13 +9,13 @@ import pandas as pd
 
 
 # 전역변수 설정
-BaseURL = 'BaseURL 입력'
+
+# BaseURL = 'Zabbix Base URL 입력'
+BaseURL = 'http://test-zabbix.com:81'
 api_url= f'{BaseURL}/api_jsonrpc.php'
-zbx_session='Zabbix Session ID 입력'
+zbx_session=''
 headers = {'Content-Type': 'application/json-rpc'}
 
-
-# Zabbix에서 해결된 장애 정보의 장애 지속 시간 계산용 함수
 def CalDuration(occured_time, recovery_time):
     duration = recovery_time - occured_time
 
@@ -41,12 +41,19 @@ def CalDuration(occured_time, recovery_time):
     return time_str.strip()
     
 
+
+
 def Get_Host_HealthCheck(HostInfo,proxy_mapping):
     host_information = []
 
     for host in HostInfo:
         interfaces = host['interfaces']
         # active_available = host['active_available']
+
+        available_status = {'0': 'Unknown', '1': 'Available', '2': 'Unavailable'}
+        host_available = available_status.get(host['available'])
+        
+       
 
         for interface in interfaces:
             # Proxy 체크
@@ -56,18 +63,17 @@ def Get_Host_HealthCheck(HostInfo,proxy_mapping):
             agent_type = type_map.get(interface['type'], 'Unknown')
             print('agent type =', agent_type)
 
-            available_status = {'0': 'Unknown', '1': 'Available', '2': 'Unavailable'}
-            host_available = available_status.get(interface['available'], 'Unknown')
 
-            if not interface['error'] and host['status'] == '0' and host_available == 'Available':
+
+            if not host['error'] and host['status'] == '0' and host_available == 'Available':
                 host_information.append({'hostids': host['hostid'], 'host': host['name'], 'ip': interface['ip'], 'port': interface['port'], 'type': agent_type,
-                                        'error_message' : interface['error'], 'proxy' : proxy_host, 'availability' : host_available})
+                                        'error_message' : host['error'], 'proxyid' : proxy_host, 'availability' : host_available})
             elif host['status'] == '1':
                 host_information.append({'hostids': host['hostid'], 'host': host['name'], 'ip': interface['ip'], 'port': interface['port'], 'type': agent_type,
-                                        'error_message' : 'This host is disabled', 'proxy': proxy_host, 'availability' : host_available})
+                                        'error_message' : 'This host is disabled', 'proxyid': proxy_host, 'availability' : host_available})
             else:
                 host_information.append({'hostids': host['hostid'], 'host': host['name'], 'ip': interface['ip'], 'port': interface['port'], 'type': agent_type,
-                                        'error_message' : interface['error'], 'proxy' : proxy_host, 'availability' : host_available})
+                                        'error_message' : host['error'], 'proxyid' : proxy_host, 'availability' : host_available})
 
        # print('최종 생성된 호스트 데이터는 다음과 같습니다 : ', host_information, '\n')
     
@@ -124,7 +130,6 @@ def main():
     timestamp = int(time.mktime(datetime.strptime(date,'%Y-%m-%d').timetuple()))
 
     print(f'timestamp = {timestamp}')
-    
 
     # 데이터 수집을 위한 리스트 선언
     Host_Data=[]
@@ -132,7 +137,7 @@ def main():
     Event_Data=[]
     Unsup_Item_Data = []
     Trend_Data = []
-
+    
 
     # 프록시 정보를 Extend로 받음.
     ProxyParameter = {
@@ -143,16 +148,18 @@ def main():
     proxy_mapping = {proxy['proxyid']: proxy['host'] for proxy in ProxyInfo}
     print(f'Proxy List : {proxy_mapping}')
 
+
+    
     # 호스트 Parameter 선언
-    Host_Parameter={'output': ['hostid', 'name', 'status', 'active_available', 'proxy_hostid'],
-                 'selectInterfaces': ['available', 'ip', 'type', 'port', 'error'] }
+    Host_Parameter={'output': ['hostid', 'name', 'status', 'available', 'proxy_hostid','error'],
+                 'selectInterfaces': [ 'ip', 'type', 'port'] }
     
     HostInfo=Get_API(token,'host.get',Host_Parameter)
+    
     Host_Data=Get_Host_HealthCheck(HostInfo,proxy_mapping)
     print(f'Host_Data = {Host_Data}')
 
-
-    
+   
     # 받아온 호스트 정보에 대한 장애 정보 호출
     for Host in range (len(Host_Data)):
         HostName=Host_Data[Host]['host']
@@ -161,9 +168,10 @@ def main():
         Hostport = Host_Data[Host]['port']
         Severity_info = {'0': 'Undefined', '1': 'Information', '2': 'Average', '3': 'Low', '4': 'High','5': 'Disaster'}
 
-        
-        
+        print(f'Hostname : {HostName}, Hostip : {Hostip}, Hostid: {Hostid} ')
+
         ################################################ 수집 되지 않은 아이템 리스트 확인 ##############################################
+        
         item_get_parameter = {
             'output' : ['name','key','state','error'],
             'hostids' : Hostid,
@@ -175,7 +183,6 @@ def main():
             'sortorder' : 'ASC',
             
         }
-
 
         # 호출한 아이템 데이터를 리스트로 저장
         Item_Value = Get_API(token,'item.get',item_get_parameter)
@@ -189,7 +196,6 @@ def main():
 
 
         ####################################### 한달 간 장애 이벤트(미해결) 가져오기 #################################################
-        # 현재 발생중인 장애 정보 가져오기
         Problemparameter = {'output': ['name', 'severity', 'clock'], 'time_from': timestamp, 'hostids': Hostid, 'recent': 'true'}
         Probleminfo = Get_API(token, 'problem.get', Problemparameter)
         
@@ -202,12 +208,8 @@ def main():
                 Problem_Data.append({'Hostid': Hostid, 'Hostname': HostName, 'Hostip': Hostip, 'Problem Name': problem_detail, 'Severity': severity, 'Occured Time': occured_time })
                 
 
-        ####################################### 한달 간 장애 이벤트(미해결) 가져오기 (END) ##########################################
-
-        ##########################################################################################################################
-
-        ####################################### 한달동안 발생했던 장애 이벤트 가져오기 ##############################################
-
+        # 한달동안 발생했던 장애 이벤트 가져오기
+        
         Eventparameter = {
             'output': ['name', 'severity', 'r_eventid', 'clock'], 
             'time_from': timestamp,
@@ -219,7 +221,6 @@ def main():
             event_id = EventInfo[event]['eventid']
             recovery_eventid = EventInfo[event]['r_eventid']
             event_name = EventInfo[event]['name']
-            event_severity = Severity_info.get(EventInfo[event]['severity'],'Unknown')
             occured_time = datetime.fromtimestamp(int(EventInfo[event]['clock'])) 
 
             # 장애 해결 여부 확인을 위한 변수 선언  
@@ -231,7 +232,7 @@ def main():
             
             # 장애 해결에 대한 EVENTID가 있을 경우 이벤트를 불러와 Recovery_time 값 확인
             if recovery_eventid != '0':
-                print('recheck')
+                
                 Recovery_Event_Parameter = {
                     'output': ['name', 'severity' , 'clock'], 
                     'eventids' : recovery_eventid	
@@ -249,13 +250,18 @@ def main():
             # 장애 발생 후 해결 까지 걸린 시간을 확인하기 위한 함수 호출
             duration =  CalDuration(occured_time,recovery_time)
             print(f'duration : {duration}')
-            Event_Data.append({'Hostid': Hostid, 'Hostname': HostName, 'Hostip': Hostip, 'Problem Name': event_name, 'Severity': event_severity, 'Problem Resolved State' : recovery_state, 'Occured Time': occured_time, 'Recovery_Time' : recovery_time, 'Duration' : duration  })
+            Event_Data.append({'Eventid': event_id, 'Hostname': HostName, 'Hostip': Hostip, 'Problem Name': event_name, 'Severity': severity, 'Problem Resolved State' : recovery_state, 'Occured Time': occured_time, 'Recovery_Time' : recovery_time, 'Duration' : duration  })
             
     print(f'EventData : {Event_Data}')
-    
-    ####################################### 한달동안 발생했던 장애 이벤트 가져오기 (END) ##########################################
 
-    ####################################### Zabbix Server 프로세스 사용현황 이미지 추출 ###########################################
+   ####################################### 한달동안 발생했던 장애 이벤트 가져오기 (END) ##########################################
+
+   ##########################################################################################################################
+
+   ####################################### Zabbix Server 프로세스 사용현황 이미지 추출 ###########################################
+
+
+    # Zabbix Server Utilization Chart Export
     
     Utilization_Parameter = {
         'output' : ['itemid','name'],
@@ -264,24 +270,24 @@ def main():
         },
         'startSearch': True,
         'serachByAny' : True,
-        # Zabbix Server 혹은 프록시에 대한 hostids 입력
         'hostids' : '10084'
     }
 
     Zabbix_Server_Utilization = Get_API(token,'item.get',Utilization_Parameter)
     Utilizationlist = ''
-    
+
     for utilization in range (len(Zabbix_Server_Utilization)):
-        Utilizationlist += f"&itemids%5B{Zabbix_Server_Utilization[utilization]['itemid']}%5D={Zabbix_Server_Utilization[utilization]['itemid']}"
+        Utilizationlist += f'&itemids%5B{Zabbix_Server_Utilization[utilization]['itemid']}%5D={Zabbix_Server_Utilization[utilization]['itemid']}'
         Trend_Item = Zabbix_Server_Utilization[utilization]['itemid']
-        Trend_Parameter ={
+        Trend_Parameter = {
             'output' : ['value_avg','itemid','clock'],
             'time_from' : timestamp,
             'itemids' : [Trend_Item]
-          
         }
 
-        # Trend Data 
+        
+        # Trend Data
+        
         Trend_Result = Get_API(token,'trend.get',Trend_Parameter)
         for trend in Trend_Result:
             trend_value = trend['value_avg']
@@ -293,15 +299,14 @@ def main():
                 trend_time = trend_time.strftime('%Y-%m-%d %H:%M:%S')
                 Trend_Data.append({'Trend_Name' : Zabbix_Server_Utilization[utilization]['name'], 'Value': trend_value, 'Time': trend_time})
 
-    print(Utilizationlist)
-    print(Trend_Data)
     
-    # Utilization Image Download
-    Zabbix_Utilization_Chart_api_url=f'{BaseURL}/chart.php?from=now%2FM&to=now%2FM{Utilizationlist}&type=0&profileIdx=web.item.graph.filter&profileIdx2=0&batch=1&width=1607&height=200&_=wu3dbkvn'
+    
+    
+    Zabbix_Utilization_Chart_api_url=f"{BaseURL}/chart.php?from=now%2FM&to=now%2FM{Utilizationlist}&type=0&profileIdx=web.item.graph.filter&profileIdx2=0&batch=1&width=1607&height=200&_=wu3dbkvn"
     print(Zabbix_Utilization_Chart_api_url)
     
     with open('./zabbix_utilization.jpg', 'wb') as file:
-        response = requests.get(Zabbix_Utilization_Chart_api_url, cookies={'zbx_session': zbx_session})
+        response = requests.get(Zabbix_Utilization_Chart_api_url, cookies={'zbx_session': token})
         file.write(response.content)
         file.close()
     
@@ -309,10 +314,8 @@ def main():
 
     save_to_excel(Host_Data, Unsup_Item_Data, Problem_Data, Event_Data, Trend_Data, './zabbix_inspection-result.xlsx')
     print('Data saved to zabbix_data.xlsx')
-
     
-
+    
 if __name__ == '__main__':
     main()
     
-
